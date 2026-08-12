@@ -1,0 +1,78 @@
+name: Android release (signed)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/resellers-dream-init
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install dependencies
+        run: npm ci
+      - name: Install expo-cli
+        run: npm install -g expo-cli
+      - name: Prebuild Android
+        run: npx expo prebuild --platform android --no-install
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+      - name: Decode keystore
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > release.keystore
+      - name: Build release APK (unsigned)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease -x bundleRelease
+      - name: Sign APK with apksigner
+        if: ${{ secrets.KEYSTORE_PASSWORD != '' && secrets.KEY_ALIAS != '' }}
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS_PASSWORD: ${{ secrets.KEY_ALIAS_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -e
+          unsigned_apk="$(find android/app/build/outputs/apk -name "*release-unsigned*.apk" | head -n 1)"
+          if [ -z "$unsigned_apk" ]; then
+            echo "Unsigned APK not found"
+            exit 1
+          fi
+          echo "Unsigned APK: $unsigned_apk"
+          build_tools=$(ls /usr/local/lib/android/sdk/build-tools | sort -V | tail -n 1)
+          apksigner=/usr/local/lib/android/sdk/build-tools/${build_tools}/apksigner
+          if [ ! -f "$apksigner" ]; then
+            echo "apksigner not found at $apksigner"
+            exit 1
+          fi
+          signed_apk="${unsigned_apk%.apk}-signed.apk"
+          $apksigner sign --ks release.keystore --ks-pass pass:${KEYSTORE_PASSWORD} --key-pass pass:${KEY_ALIAS_PASSWORD} --out "$signed_apk" "$unsigned_apk"
+          echo "Signed APK: $signed_apk"
+      - name: Upload signed APK
+        if: ${{ secrets.KEYSTORE_PASSWORD != '' && secrets.KEY_ALIAS != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: resellers-dream-release-apk
+          path: android/app/build/outputs/apk/**/*-signed.apk
+      - name: Upload unsigned APK (artifact)
+        if: ${{ secrets.KEYSTORE_PASSWORD == '' || secrets.KEY_ALIAS == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: resellers-dream-release-unsigned
+          path: android/app/build/outputs/apk/**/*release-unsigned*.apk
