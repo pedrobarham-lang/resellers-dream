@@ -12,9 +12,9 @@ permissions:
 jobs:
   eas-android-build:
     runs-on: ubuntu-latest
-    env:
+    env: ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-    steps:
+   steps:
       - name: Checkout
         uses: actions/checkout@v4
 
