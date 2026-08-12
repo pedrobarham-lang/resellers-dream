@@ -41,7 +41,7 @@ jobs:
           echo "EXPO_TOKEN appears set (hidden)"
           eas whoami || true
         env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_TOKEN:
 
       - name: Start EAS build (non-interactive)
         id: start-build
