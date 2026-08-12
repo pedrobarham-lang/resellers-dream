@@ -1,0 +1,107 @@
+name: EAS Android APK (signed via EAS)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/resellers-dream-init
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  eas-android-build:
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install EAS CLI and jq
+        run: |
+          npm install -g eas-cli
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+      - name: Verify EXPO_TOKEN
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "EXPO_TOKEN is not set. Add it as a repository secret named EXPO_TOKEN." >&2
+            exit 1
+          fi
+          echo "EXPO_TOKEN appears set (hidden)"
+          eas whoami || true
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Start EAS build (non-interactive)
+        id: start-build
+        run: |
+          set -euo pipefail
+          echo "Starting EAS build..."
+          # Start the build and capture JSON output
+          eas build --platform android --profile release --non-interactive --json > build.json
+          cat build.json
+          BUILD_ID=$(jq -r '.id // .[0].id' build.json)
+          if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "null" ]; then
+            echo "Failed to determine build id" >&2
+            exit 1
+          fi
+          echo "BUILD_ID=$BUILD_ID" >> $GITHUB_OUTPUT
+          echo "Build started: $BUILD_ID"
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Wait for build to finish and download artifact
+        id: wait-download
+        run: |
+          set -euo pipefail
+          BUILD_ID=${{ steps.start-build.outputs.BUILD_ID }}
+          echo "Waiting for build $BUILD_ID to finish..."
+          # Poll for status
+          for i in $(seq 1 60); do
+            echo "Attempt $i: checking status..."
+            eas build:view --platform android "$BUILD_ID" --json > status.json || true
+            status=$(jq -r '.status // .[0].status' status.json || echo "")
+            echo "Status: $status"
+            if [ "$status" = "finished" ]; then
+              url=$(jq -r '.artifacts[0].url // .[0].artifacts[0].url' status.json)
+              if [ -n "$url" ] && [ "$url" != "null" ]; then
+                echo "Downloading artifact from: $url"
+                curl -L "$url" -o app-release.apk
+                echo "Downloaded artifact to app-release.apk"
+                exit 0
+              else
+                echo "Build finished but no artifact URL found. Dumping status.json:" >&2
+                jq . status.json >&2 || true
+                exit 1
+              fi
+            fi
+            if [ "$status" = "errored" ]; then
+              echo "Build errored. See status.json" >&2
+              jq . status.json >&2 || true
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "Timed out waiting for build to finish" >&2
+          jq . status.json || true
+          exit 1
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Upload artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resellers-dream-eas-apk
+          path: app-release.apk
